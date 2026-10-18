@@ -1,137 +1,156 @@
 # Weekly Pharmacy Sales Data Warehouse
 
-**A SQL Server Data Engineering project focused on dimensional modeling, ETL development, and weekly sales analytics.**
+**A SQL Server Data Engineering project demonstrating dimensional modeling, ETL development, data quality validation, and weekly sales analytics.**
 
-This project implements a relational data warehouse that transforms transactional pharmacy order data into a structured analytical model. It enables weekly sales reporting across pharmacies through an automated, re-runnable ETL process and a simplified reporting view.
-
-**Data Engineering Portfolio — Project 01**
+**Data Engineering Portfolio | Project 01**
 
 ## Overview
 
-The primary objective is to answer a business question:
+This project implements a SQL Server Data Warehouse that transforms transactional pharmacy orders into structured, analysis-ready data.
 
-**How much revenue did each pharmacy generate each week, and how many delivered orders contributed to that revenue?**
+The solution extracts operational data from `OnlinePharmacyDB`, loads dimension tables, aggregates sales into a weekly fact table, and exposes a reporting view for pharmacy-level performance analysis.
 
-The solution extracts data from an existing operational database (`OnlinePharmacyDB`), loads dimension tables, aggregates transactional sales data, and stores the results in a weekly sales fact table.
+### Business Problem
 
-The resulting dataset supports consistent, pharmacy-level weekly reporting without requiring repeated aggregation of individual order items.
+**How much did each pharmacy sell each week, and how many delivered orders contributed to those sales?**
+
+Instead of repeatedly processing individual transactions for reporting, the warehouse stores pre-aggregated weekly sales metrics.
+
+**Fact Grain:** One row per pharmacy per week.
+
+Each reporting week starts on Monday and ends on Sunday.
 
 ## Technology Stack
 
 | Technology | Purpose |
 |---|---|
-| Microsoft SQL Server | Data warehouse storage and processing |
-| T-SQL | Data extraction, transformation, and loading |
-| SQL Server Management Studio (SSMS) | Database development and execution |
-| Dimensional Modeling | Analytical data organization |
+| Microsoft SQL Server | Data warehouse storage |
+| T-SQL | Data transformation and aggregation |
+| SQL Server Management Studio | SQL development and execution |
+| Dimensional Modeling | Analytical schema design |
 | Stored Procedures | ETL implementation |
-| SQL Views | Reporting and semantic layer |
+| SQL Views | Reporting and data consumption |
 
 ## Data Architecture
 
-The solution follows a dimensional modeling approach using a weekly sales fact table and supporting dimensions.
+The solution follows an Extract, Transform, Load (ETL) approach to move operational data into an analytical model.
 
-```text
-                 OnlinePharmacyDB
-                (Operational Database)
-                         |
-                         v
-                 Extract & Transform
-                         |
-                         v
-                  Dimension Loading
-                 /       |         \
-                v        v          v
-           DimDate  DimPharmacy  DimOrderStatus
-                \        /          |
-                 \      /       ETL Status Filter
-                  v    v
-           FactWeeklyPharmacySales
-                         |
-                         v
-             vw_WeeklyPharmacySales
-                         |
-                         v
-                Weekly Sales Reports
-```
+![ETL Pipeline Architecture](docs/images/etl-architecture.png)
 
-### Dimensional Model
+The workflow consists of:
+
+1. **Extract:** Retrieve orders, order items, pharmacies, and order statuses from `OnlinePharmacyDB`.
+2. **Transform:** Filter delivered orders, calculate weekly reporting periods, resolve dimension keys, and aggregate sales metrics.
+3. **Load:** Populate dimension tables and synchronize the weekly sales fact table.
+4. **Report:** Expose the aggregated data through `vw_WeeklyPharmacySales`.
+
+The ETL is implemented using SQL Server stored procedures.
+
+## Dimensional Model
+
+The warehouse uses a dimensional model centered on `FactWeeklyPharmacySales`.
+
+![Star Schema — Weekly Pharmacy Sales](docs/images/star-schema.png)
+
+### Data Warehouse Tables
 
 | Table | Description |
 |---|---|
-| `DimDate` | Calendar information used to identify and analyze reporting periods |
-| `DimPharmacy` | Pharmacy identifiers and descriptive attributes |
-| `DimOrderStatus` | Reference data used to identify delivered orders during ETL |
-| `FactWeeklyPharmacySales` | Aggregated weekly sales and delivered order counts |
-| `vw_WeeklyPharmacySales` | Reporting view presenting pharmacy-level weekly metrics |
+| `DimDate` | Calendar dates and reporting attributes |
+| `DimPharmacy` | Pharmacy identifiers and descriptive information |
+| `DimOrderStatus` | Order status lookup used during ETL |
+| `FactWeeklyPharmacySales` | Weekly revenue and delivered order counts per pharmacy |
+| `vw_WeeklyPharmacySales` | Reporting view containing readable weekly sales metrics |
 
-### Fact Table Grain
+`DimOrderStatus` is used to identify delivered orders during ETL. It is not directly related to the fact table through a foreign key.
 
-**One row represents one pharmacy during one calendar week.**
+### Fact Table Design
 
-Weeks run from **Monday through Sunday**.
+**Fact Table:** `FactWeeklyPharmacySales`
 
-The fact table uses a composite primary key:
+**Grain:** One row per pharmacy per week.
+
+| Column | Description |
+|---|---|
+| `WeekStartDateKey` | Foreign key referencing the Monday date in `DimDate` |
+| `PharmacyKey` | Foreign key referencing `DimPharmacy` |
+| `TotalOrders` | Number of distinct delivered orders |
+| `TotalSales` | Total value of delivered order items |
+
+The composite primary key is:
 
 `(WeekStartDateKey, PharmacyKey)`
 
-This guarantees that each pharmacy has at most one fact record per reporting week.
+This ensures that each pharmacy has at most one fact record per reporting week.
 
-### Fact Measures
+### Metric Definitions
 
-| Measure | Calculation |
+| Metric | Calculation |
 |---|---|
-| `TotalSales` | `SUM(Price * Quantity)` for delivered order items |
-| `TotalOrders` | `COUNT(DISTINCT OrderId)` for delivered orders containing at least one item |
-| `WeekStartDateKey` | Date dimension key representing the Monday of the order creation week |
+| Total Sales | `SUM(Price * Quantity)` |
+| Total Orders | `COUNT(DISTINCT OrderId)` |
+| Week Start | Monday of the order creation week |
+| Week End | Sunday of the same reporting week |
 
-**Business rules and assumptions**
+### Business Rules and Assumptions
 
 - Only orders currently marked as `Delivered` are included.
-- Sales are grouped by the week of `Orders.CreatedOn`, not the actual delivery date.
-- Revenue excludes delivery fees and adjustments unless already reflected in the item prices.
-- Order status changes may affect historical weekly totals during subsequent ETL runs.
-- Orders without order items do not contribute to the measures.
-- Source monetary values are aggregated without currency conversion.
-- A pharmacy-week with no qualifying delivered order items is not stored in the fact table.
+- Sales are grouped using `Orders.CreatedOn`, not the actual delivery date.
+- Each reporting week runs from Monday through Sunday.
+- Orders with multiple items contribute to revenue for all their items but are counted once.
+- Orders without order items are excluded.
+- Delivery fees, refunds, discounts, and tax adjustments are not separately included unless reflected in item prices.
+- No currency conversion is performed.
+- Historical weekly totals may change when order statuses or item values change.
+- Pharmacy-weeks without qualifying delivered order items are not stored.
+- The reporting view excludes pharmacies marked as test records.
 
-## ETL Pipeline
+## ETL Pipeline Implementation
 
-The ETL process is implemented using SQL Server stored procedures and follows three main stages.
+The ETL process uses stored procedures to load dimensions and maintain weekly sales aggregates.
 
-**1. Extract**
+### 1. Dimension Loading
 
-Read transactional data from the operational database:
+The pipeline loads three dimensions:
 
-- Orders and order items
-- Pharmacies
-- Order status reference data
+- **DimDate:** Generates calendar records and date attributes.
+- **DimPharmacy:** Synchronizes pharmacy information from the source database.
+- **DimOrderStatus:** Loads order status reference data for identifying delivered orders.
 
-**2. Transform**
+Existing dimension records are updated when applicable, and new records are inserted.
 
-Apply business and aggregation rules:
+### 2. Weekly Sales Transformation
 
-- Identify delivered orders.
-- Calculate the Monday start date for each order's creation week.
-- Resolve pharmacy and date dimension keys.
-- Aggregate sales by pharmacy and week.
-- Count distinct delivered orders.
+The fact ETL performs the following operations:
 
-**3. Load**
+- Filters orders with `Delivered` status.
+- Calculates the Monday of each order's creation week.
+- Resolves pharmacy and date dimension keys.
+- Aggregates item-level sales into pharmacy-week totals.
+- Counts distinct delivered orders.
+- Stores the aggregated results in a temporary staging table.
 
-Synchronize the data warehouse with the current source snapshot:
+### 3. Fact Table Loading
 
-- Update existing dimension records.
-- Insert new dimension records.
-- Update existing weekly sales facts.
-- Insert new pharmacy-week records.
-- Remove outdated fact records that no longer qualify.
+The staged weekly dataset is used to synchronize `FactWeeklyPharmacySales`.
 
-The fact-loading procedure stages the aggregated dataset once and uses it to synchronize the fact table.
+The process:
 
-**Loading strategy:** Full snapshot recalculation, rather than incremental Change Data Capture (CDC).
+- **UPDATE:** Refreshes existing pharmacy-week records when their metrics change.
+- **INSERT:** Adds newly identified pharmacy-week records.
+- **DELETE:** Removes outdated records that no longer have qualifying delivered orders.
 
-The ETL is designed for repeated, serial execution against a complete source dataset. It is not intended for partial source feeds.
+The load operations use SQL transactions and error handling to reduce the risk of partially applied fact updates.
+
+### Loading Strategy
+
+**Full Snapshot Recalculation**
+
+The current implementation recalculates the weekly aggregates from the operational source rather than relying on incremental Change Data Capture (CDC).
+
+This approach supports re-runnable loads and simplifies handling of historical order changes.
+
+It assumes that the complete source dataset is available and that ETL executions are run serially.
 
 ## Repository Structure
 
@@ -140,6 +159,12 @@ weekly-pharmacy-sales-dwh/
 │
 ├── README.md
 ├── .gitignore
+│
+├── docs/
+│   └── images/
+│       ├── etl-architecture.png
+│       ├── star-schema.png
+│       └── weekly-sales-results.png
 │
 ├── sql/
 │   ├── 01_schema.sql
@@ -156,12 +181,12 @@ weekly-pharmacy-sales-dwh/
 
 ### Prerequisites
 
-- Microsoft SQL Server 2016 SP1 or later, supporting the required T-SQL features.
+- Microsoft SQL Server 2016 SP1 or later, with support for the required T-SQL features.
 - SQL Server Management Studio (SSMS) or `sqlcmd`.
-- An accessible operational database named `OnlinePharmacyDB`.
-- Appropriate database creation and source read permissions.
+- An existing source database named `OnlinePharmacyDB`.
+- Permissions to create the Data Warehouse database and read the operational database.
 
-The source database must provide the following tables:
+### Required Source Tables
 
 | Source Table | Required Columns |
 |---|---|
@@ -170,34 +195,60 @@ The source database must provide the following tables:
 | `Pharmacies` | `Id`, `Key`, `CreatedOn`, `TestFlag` |
 | `OrderStateTypes` | `Id`, `OrderStateTypeId`, `StateName` |
 
-The repository does not include source business data.
+The operational database and business data are not included in this repository.
 
-### Installation and Execution
+### Installation
 
 **Step 1 — Clone the repository**
 
 ```bash
-git clone https://github.com/<your-username>/weekly-pharmacy-sales-dwh.git
+git clone https://github.com/seifhassan89/weekly-pharmacy-sales-dwh.git
 cd weekly-pharmacy-sales-dwh
 ```
 
-Replace `<your-username>` with your GitHub username.
+**Step 2 — Configure the environment**
 
-**Step 2 — Review the source database**
+Connect to the SQL Server instance containing `OnlinePharmacyDB`.
 
-Ensure that `OnlinePharmacyDB` exists on the SQL Server instance and matches the expected schema.
+Verify that the source tables and columns match the expected schema.
 
-**Step 3 — Execute SQL scripts in order**
+**Step 3 — Execute the scripts**
+
+Run the SQL scripts in the following order:
 
 | Order | Script | Purpose |
 |---|---|---|
-| 1 | `01_schema.sql` | Create the data warehouse schema |
-| 2 | `02_load_dimensions.sql` | Create dimension loading procedures |
-| 3 | `03_load_fact.sql` | Create the weekly fact loading procedure |
-| 4 | `04_semantic_view.sql` | Create the reporting view |
-| 5 | `05_run_etl.sql` | Execute the ETL workflow |
+| 1 | `sql/01_schema.sql` | Create database, dimensions, fact table, and constraints |
+| 2 | `sql/02_load_dimensions.sql` | Create dimension loading procedures |
+| 3 | `sql/03_load_fact.sql` | Create fact loading procedure |
+| 4 | `sql/04_semantic_view.sql` | Create reporting view |
+| 5 | `sql/05_run_etl.sql` | Execute the ETL procedures and display results |
 
-**Step 4 — Query the reporting view**
+**Step 4 — Validate the data**
+
+Run:
+
+`tests/quality_checks.sql`
+
+Review the validation results and investigate any failures before relying on the reported metrics.
+
+## Sample Query Results
+
+The following screenshot shows weekly pharmacy sales data retrieved from SQL Server after executing the ETL.
+
+![Weekly Pharmacy Sales Query Results](docs/images/weekly-sales-results.png)
+
+The reporting output includes:
+
+| Column | Description |
+|---|---|
+| `Pharmacy` | Pharmacy business identifier |
+| `WeekStart` | First day of the reporting week |
+| `WeekEnd` | Last day of the reporting week |
+| `TotalOrders` | Distinct delivered order count |
+| `TotalSales` | Aggregated sales value |
+
+### Example Reporting Query
 
 ```sql
 USE WeeklySalesPharmacyDWH;
@@ -210,100 +261,110 @@ SELECT
     TotalOrders,
     TotalSales
 FROM dbo.vw_WeeklyPharmacySales
-ORDER BY WeekStart, Pharmacy;
+ORDER BY
+    WeekStart,
+    Pharmacy;
 ```
 
-The reporting view excludes pharmacies marked as test records.
+This query reads from the reporting view rather than recalculating the underlying transactional sales.
 
 ## Data Quality and Validation
 
-A separate validation script is provided at:
+The project includes `tests/quality_checks.sql` to validate key warehouse properties.
 
-`tests/quality_checks.sql`
+### Implemented Checks
 
-The checks cover:
-
-- Fact table grain uniqueness.
+- Fact grain uniqueness.
+- Pharmacy and date lookup uniqueness.
 - Valid Monday week-start dates.
-- Dimension key uniqueness.
-- Referential integrity between fact and dimension tables.
-- Basic consistency of stored data.
+- Basic fact-to-dimension referential integrity.
+- Basic fact measure consistency.
 
-**Recommended integration test scenarios**
+### Recommended Integration Test Scenarios
 
-| Scenario | Expected Behavior |
+| Scenario | Expected Result |
 |---|---|
-| Order with multiple items | Revenue includes all items; order counted once |
-| Repeated ETL execution | No duplicated pharmacy-week records |
-| Order price change | Weekly revenue recalculated |
-| New delivered order | Corresponding pharmacy-week updated or inserted |
-| Last delivered order no longer qualifies | Outdated pharmacy-week removed |
+| Order contains multiple items | Revenue includes all items; the order is counted once |
+| ETL runs multiple times | No duplicated pharmacy-week records |
+| Order item price changes | Weekly sales total is recalculated |
+| New order becomes Delivered | Relevant weekly aggregate is updated or inserted |
+| Last delivered order becomes ineligible | Outdated pharmacy-week fact is removed |
 
-These checks support validation but do not replace executing the project against a SQL Server database containing representative source data.
+The included checks do not replace a full integration test against representative source data.
 
-## Design Decisions and Limitations
+## Design Decisions and Trade-offs
 
-The implementation intentionally prioritizes clarity and core Data Engineering concepts over production-scale complexity.
+### Source-Derived Dimension Keys
 
-**Dimensional keys**
+The pharmacy dimension uses integer identifiers derived from the source system.
 
-The project uses source-derived integer pharmacy IDs rather than independently generated surrogate identity values.
+This simplifies the implementation for an introductory project but does not provide independent, warehouse-generated surrogate identities.
 
-**Weekly aggregation**
+### Monday-Based Weekly Grain
 
-Actual week-start dates are used to identify reporting periods, avoiding ambiguity around week numbers and calendar-year boundaries.
+Reporting periods are identified using their actual Monday start dates rather than only week numbers.
 
-**Full snapshot loading**
+This avoids ambiguity when analyzing weeks across calendar-year boundaries.
 
-A full recalculation simplifies synchronization and handles changes to previously delivered orders. However, it introduces unnecessary processing for unchanged historical data.
+### Re-runnable ETL
 
-**Calendar coverage**
+The fact pipeline uses the current source data to recalculate weekly results.
 
-The date dimension initially covers 2020–2030 and must be extended if operational data falls outside that range.
+This supports repeated executions and historical corrections, but reprocesses unchanged data.
 
-**Operational limitations**
+### Calendar Coverage
 
-The solution assumes a complete, consistent source dataset and serial ETL execution. Production deployment would require additional attention to performance, observability, data reconciliation, and orchestration.
+The date dimension defaults to the period 2020–2030.
 
-## Data Architecture & Dimensional Model
+This range must be extended when processing source records outside the configured dates.
 
-![ETL Architecture & Star Schema](docs/images/Weekly%20Pharmacy%20Sales%20ETL%20and%20Star%20Schema.png)
+### Current Limitations
 
-## Sample Output
-
-![Weekly Sales Results](docs/images/weekly-sales-results.png)
+- No incremental CDC or watermark-based processing.
+- No scheduled orchestration or pipeline monitoring.
+- No currency normalization.
+- No independent handling of delivery fees, refunds, or tax adjustments.
+- No automated source-to-warehouse financial reconciliation.
+- The full-snapshot load requires a complete and sufficiently consistent source dataset.
 
 ## Future Enhancements
 
-Potential improvements include:
+Possible extensions to the project include:
 
-- Incremental loading using change tracking or CDC.
-- Scheduled pipeline orchestration.
-- ETL monitoring and structured execution logs.
-- Source-to-warehouse reconciliation tests.
-- Extended business metrics and reporting.
-- Automated integration testing.
-- Power BI dashboards for weekly revenue trends.
+- Incremental ETL using CDC or change tracking.
+- Scheduled execution with SQL Server Agent or an orchestration platform.
+- ETL execution logging and monitoring.
+- Automated source-to-target reconciliation.
+- Improved error handling and operational alerting.
+- Additional analytical metrics and dimensions.
+- Power BI dashboards for sales trends and pharmacy performance.
 
-These are future opportunities and are not part of the current implementation.
+These features are future improvement opportunities, not part of the current implementation.
 
 ## Learning Outcomes
 
-This project demonstrates foundational Data Engineering concepts:
+Through this project, I practiced foundational Data Engineering concepts, including:
 
+- Data warehousing fundamentals
 - Dimensional modeling and fact table grain
-- Star schema design
-- Business and surrogate key lookups
-- SQL-based ETL development
-- Aggregate measures and analytical reporting
-- Re-runnable data loading
-- Data quality and consistency validation
-- Technical documentation and reproducible workflows
+- Fact and dimension table relationships
+- ETL pipeline design using T-SQL
+- Business key and dimension key lookups
+- Data aggregation and reporting
+- Re-runnable data synchronization
+- Data quality validation
+- Technical documentation
+
+## Project Information
+
+**Project Type:** Data Engineering Course Assignment
+
+**Portfolio:** Data Engineering — Project 01
+
+**Database:** Microsoft SQL Server
+
+**Author:** Seif Hassan
 
 ---
 
-**Project Type:** Data Engineering Course Assignment  
-**Portfolio:** Data Engineering — Project 01  
-**Author:** Seif Hassan
-
-*This is an educational project intended to demonstrate foundational Data Engineering practices. It has not been presented as a production-hardened data warehouse.*
+*This project was developed for educational purposes to demonstrate foundational Data Engineering practices. It is not intended to represent a production-hardened data platform.*
