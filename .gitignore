@@ -1,0 +1,13 @@
+# Local database exports / credentials
+*.bak
+*.bacpac
+*.mdf
+*.ldf
+.env
+.env.*
+*.csv
+*.xlsx
+.vs/
+*.user
+*.suo
+
